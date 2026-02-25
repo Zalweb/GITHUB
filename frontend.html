@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CMPJ Face API Tester</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --card: #121a33;
+      --muted: #9fb0d1;
+      --text: #ecf2ff;
+      --accent: #5a8bff;
+      --accent-2: #7aebc2;
+      --danger: #ff6f91;
+      --ok: #8bffbd;
+      --border: #273255;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(circle at 20% -20%, #1b2c60, var(--bg) 45%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .container {
+      width: min(1100px, 94%);
+      margin: 20px auto 40px;
+    }
+    h1 { margin: 0 0 6px; font-size: clamp(1.3rem, 2vw, 2rem); }
+    p { margin: 0; color: var(--muted); }
+    .grid {
+      margin-top: 16px;
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+    .card {
+      background: linear-gradient(180deg, #152045, var(--card));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, .25);
+    }
+    .card h2 { margin: 2px 0 10px; font-size: 1.05rem; }
+    label { font-size: .9rem; display: block; margin: 8px 0 4px; color: var(--muted); }
+    input, button {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      padding: 10px;
+      background: #0d1530;
+      color: var(--text);
+    }
+    input[type="file"] { padding: 7px; }
+    .inline { display: flex; gap: 8px; align-items: center; }
+    .inline input { width: 95px; }
+    button {
+      cursor: pointer;
+      margin-top: 10px;
+      font-weight: 700;
+      background: linear-gradient(90deg, var(--accent), #6f63ff);
+      border: none;
+    }
+    button.secondary {
+      background: linear-gradient(90deg, #2b3d77, #2f4b86);
+      font-weight: 600;
+    }
+    .result {
+      margin-top: 10px;
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: .85rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0a122a;
+      padding: 10px;
+      min-height: 56px;
+    }
+    .ok { color: var(--ok); }
+    .error { color: var(--danger); }
+    table {
+      width: 100%;
+      margin-top: 8px;
+      border-collapse: collapse;
+      font-size: .9rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .toolbar { margin-top: 12px; display: flex; gap: 8px; }
+    .toolbar button { margin-top: 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Face Recognition API Tester</h1>
+    <p>Use this frontend to register faces, run recognition, and manage entries in <code>faces.db</code>.</p>
+
+    <div class="card" style="margin-top: 16px;">
+      <h2>Connection</h2>
+      <label for="apiBase">API Base URL</label>
+      <input id="apiBase" type="text" value="" placeholder="Leave blank to use current host" />
+      <p style="margin-top:8px;">Example: <code>http://localhost:8000</code></p>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Register Face</h2>
+        <label for="registerName">Name</label>
+        <input id="registerName" type="text" placeholder="e.g. Alice" />
+        <label for="registerFile">Face image</label>
+        <input id="registerFile" type="file" accept="image/*" />
+        <button id="registerBtn">Register</button>
+        <div id="registerResult" class="result"></div>
+      </section>
+
+      <section class="card">
+        <h2>Recognize Face</h2>
+        <label for="recognizeFile">Face image</label>
+        <input id="recognizeFile" type="file" accept="image/*" />
+        <label for="threshold">Threshold</label>
+        <div class="inline">
+          <input id="threshold" type="number" min="0" max="2" step="0.01" value="0.5" />
+          <span style="color:var(--muted);font-size:.85rem;">Default: 0.5</span>
+        </div>
+        <button id="recognizeBtn">Recognize</button>
+        <div id="recognizeResult" class="result"></div>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Registered Faces</h2>
+      <div class="toolbar">
+        <button id="refreshFaces" class="secondary">Refresh</button>
+      </div>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Name</th><th>Action</th></tr>
+        </thead>
+        <tbody id="facesBody"></tbody>
+      </table>
+      <div id="facesResult" class="result"></div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function apiBase() {
+      const custom = $("apiBase").value.trim();
+      return custom || window.location.origin;
+    }
+
+    async function parseJson(response) {
+      const text = await response.text();
+      try { return JSON.parse(text); }
+      catch { return { raw: text }; }
+    }
+
+    function show(el, data, ok = true) {
+      el.classList.remove("ok", "error");
+      el.classList.add(ok ? "ok" : "error");
+      el.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    }
+
+    async function registerFace() {
+      const name = $("registerName").value.trim();
+      const file = $("registerFile").files[0];
+      const output = $("registerResult");
+
+      if (!name || !file) {
+        show(output, "Please provide both name and image.", false);
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const url = new URL(`${apiBase()}/register`);
+      url.searchParams.set("name", name);
+
+      try {
+        const res = await fetch(url, { method: "POST", body: formData });
+        const payload = await parseJson(res);
+        show(output, payload, res.ok);
+        if (res.ok) await loadFaces();
+      } catch (err) {
+        show(output, `Request failed: ${err.message}`, false);
+      }
+    }
+
+    async function recognizeFace() {
+      const file = $("recognizeFile").files[0];
+      const threshold = $("threshold").value || "0.5";
+      const output = $("recognizeResult");
+
+      if (!file) {
+        show(output, "Please choose an image.", false);
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const url = new URL(`${apiBase()}/recognize`);
+      url.searchParams.set("threshold", threshold);
+
+      try {
+        const res = await fetch(url, { method: "POST", body: formData });
+        const payload = await parseJson(res);
+        show(output, payload, res.ok);
+      } catch (err) {
+        show(output, `Request failed: ${err.message}`, false);
+      }
+    }
+
+    async function deleteFace(id) {
+      const output = $("facesResult");
+      try {
+        const res = await fetch(`${apiBase()}/faces/${id}`, { method: "DELETE" });
+        const payload = await parseJson(res);
+        show(output, payload, res.ok);
+        if (res.ok) await loadFaces();
+      } catch (err) {
+        show(output, `Delete failed: ${err.message}`, false);
+      }
+    }
+
+    async function loadFaces() {
+      const body = $("facesBody");
+      const output = $("facesResult");
+      body.innerHTML = "";
+
+      try {
+        const res = await fetch(`${apiBase()}/faces`);
+        const payload = await parseJson(res);
+
+        if (!res.ok) {
+          show(output, payload, false);
+          return;
+        }
+
+        if (!Array.isArray(payload) || payload.length === 0) {
+          show(output, "No faces registered yet.", true);
+          return;
+        }
+
+        payload.forEach((row) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${row.id}</td>
+            <td>${row.name}</td>
+            <td><button class="secondary" data-id="${row.id}">Delete</button></td>
+          `;
+          tr.querySelector("button").addEventListener("click", () => deleteFace(row.id));
+          body.appendChild(tr);
+        });
+
+        show(output, `Loaded ${payload.length} face(s).`, true);
+      } catch (err) {
+        show(output, `Fetch failed: ${err.message}`, false);
+      }
+    }
+
+    $("registerBtn").addEventListener("click", registerFace);
+    $("recognizeBtn").addEventListener("click", recognizeFace);
+    $("refreshFaces").addEventListener("click", loadFaces);
+    loadFaces();
+  </script>
+</body>
+</html>

@@ -3,6 +3,7 @@ import json
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from PIL import Image
 import face_recognition
 import io
@@ -43,6 +44,12 @@ def get_embedding_from_bytes(data: bytes) -> list:
     if not encodings:
         raise HTTPException(status_code=400, detail="No face detected in image.")
     return encodings[0].tolist()
+
+
+@app.get("/")
+def frontend():
+    """Serve a simple frontend to test the API."""
+    return FileResponse("frontend.html")
 
 @app.post("/register")
 async def register(name: str, file: UploadFile = File(...)):
