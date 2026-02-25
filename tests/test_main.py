@@ -67,6 +67,14 @@ def app_module():
     cors_mod = types.ModuleType("fastapi.middleware.cors")
     cors_mod.CORSMiddleware = object
 
+    responses_mod = types.ModuleType("fastapi.responses")
+
+    class FileResponse:
+        def __init__(self, path):
+            self.path = path
+
+    responses_mod.FileResponse = FileResponse
+
     pil_mod = types.ModuleType("PIL")
 
     class _Image:
@@ -95,6 +103,7 @@ def app_module():
 
     sys.modules["fastapi"] = fastapi_mod
     sys.modules["fastapi.middleware.cors"] = cors_mod
+    sys.modules["fastapi.responses"] = responses_mod
     sys.modules["PIL"] = pil_mod
     sys.modules["numpy"] = np_mod
     sys.modules["face_recognition"] = fr_mod
@@ -174,3 +183,8 @@ def test_recognize_handles_empty_db_and_threshold_miss(app_module):
     assert recognition["message"] == "No match found."
 
     os.remove(db_path)
+
+
+def test_frontend_route_returns_file_response(app_module):
+    response = app_module.frontend()
+    assert getattr(response, "path", None) == "frontend.html"
