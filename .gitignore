@@ -1,0 +1,12 @@
+.env
+*.tsbuildinfo
+.run/
+.vscode/
+
+Frontend/node_modules/
+Frontend/dist/
+
+Backend/.venv/
+Backend/__pycache__/
+Backend/faces.db
+Backend/models/
