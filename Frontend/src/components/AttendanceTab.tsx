@@ -27,6 +27,8 @@ type CheckinResult = {
   snapshotUrl: string;
 };
 
+const MAX_ALLOWED_ACCURACY_M = Number(import.meta.env.VITE_MAX_ALLOWED_ACCURACY_M ?? 200);
+
 function resolveStageMessage(res: AttendanceCheckinResponse): string {
   if (res.stage === "liveness") {
     return "Spoof / low liveness. Keep scanning.";
@@ -93,6 +95,10 @@ export default function AttendanceTab() {
     [events, selectedEventId],
   );
 
+  const locationAccuracy = location?.accuracy_m;
+  const locationAccuracyOk =
+    typeof locationAccuracy === "number" && Number.isFinite(locationAccuracy) && locationAccuracy <= MAX_ALLOWED_ACCURACY_M;
+
   const loadEvents = useCallback(async () => {
     try {
       const data = await listEvents();
@@ -105,16 +111,22 @@ export default function AttendanceTab() {
     }
   }, [selectedEventId]);
 
-  const refreshLocation = useCallback(async () => {
+  const refreshLocation = useCallback(async (): Promise<BrowserLocation | null> => {
     setLocationLoading(true);
     setErrorMessage(null);
     try {
       const loc = await readGeoPosition();
       setLocation(loc);
-      setGeoStatus("Location ready");
+      if (typeof loc.accuracy_m === "number" && loc.accuracy_m <= MAX_ALLOWED_ACCURACY_M) {
+        setGeoStatus("Location ready");
+      } else {
+        setGeoStatus("GPS too weak");
+      }
+      return loc;
     } catch (error) {
       setGeoStatus("Location unavailable");
       setErrorMessage(error instanceof Error ? error.message : "Failed to fetch location.");
+      return null;
     } finally {
       setLocationLoading(false);
     }
@@ -177,9 +189,24 @@ export default function AttendanceTab() {
     setScanStatus("Scanning");
     setStatusMessage("Scanning for liveness + match + geofence...");
 
-    if (!location) {
-      await refreshLocation();
+    let currentLocation = location;
+    if (!currentLocation) {
+      currentLocation = await refreshLocation();
+      if (!currentLocation) {
+        setScanStatus("Paused");
+        setStatusMessage("Could not get location. Try Refresh GPS.");
+        return;
+      }
     }
+
+    const accuracy = currentLocation.accuracy_m;
+    if (typeof accuracy !== "number" || !Number.isFinite(accuracy) || accuracy > MAX_ALLOWED_ACCURACY_M) {
+      setGeoStatus("GPS too weak");
+      setScanStatus("Paused");
+      setStatusMessage(`GPS accuracy too low (+/-${(accuracy ?? 0).toFixed(1)}m). Need <= ${MAX_ALLOWED_ACCURACY_M}m.`);
+      return;
+    }
+
     setScanActive(true);
   }, [location, refreshLocation, selectedEventId]);
 
@@ -195,6 +222,15 @@ export default function AttendanceTab() {
       if (!location) {
         setGeoStatus("Location unavailable");
         setStatusMessage("Waiting for GPS location...");
+        return;
+      }
+
+      const accuracy = location.accuracy_m;
+      if (typeof accuracy !== "number" || !Number.isFinite(accuracy) || accuracy > MAX_ALLOWED_ACCURACY_M) {
+        setGeoStatus("GPS too weak");
+        setScanActive(false);
+        setScanStatus("Paused");
+        setStatusMessage(`GPS accuracy too low (+/-${(accuracy ?? 0).toFixed(1)}m). Need <= ${MAX_ALLOWED_ACCURACY_M}m.`);
         return;
       }
 
@@ -317,10 +353,16 @@ export default function AttendanceTab() {
           <p>
             Location:{" "}
             {location
-              ? `${location.lat.toFixed(6)}, ${location.lng.toFixed(6)} (±${(location.accuracy_m ?? 0).toFixed(1)}m)`
+              ? `${location.lat.toFixed(6)}, ${location.lng.toFixed(6)} (+/-${(location.accuracy_m ?? 0).toFixed(1)}m)`
               : "not available"}
           </p>
           <p>Updated: {location ? new Date(location.at).toLocaleTimeString() : "-"}</p>
+          <p className={locationAccuracyOk ? "text-emerald-300" : "text-amber-300"}>
+            Accuracy check:{" "}
+            {locationAccuracyOk
+              ? `OK (<= ${MAX_ALLOWED_ACCURACY_M}m)`
+              : `Too low. Need <= ${MAX_ALLOWED_ACCURACY_M}m`}
+          </p>
         </div>
 
         <div className="mt-3 flex flex-wrap gap-2">

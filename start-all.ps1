@@ -54,7 +54,7 @@ Write-Host "Logs     : $runDir"
 
 if ($WithNgrok) {
   $ngrok = Start-Process -FilePath "ngrok" `
-    -ArgumentList "http","5173","--log","stdout" `
+    -ArgumentList "http","127.0.0.1:5173","--log","stdout" `
     -WorkingDirectory $root `
     -RedirectStandardOutput (Join-Path $runDir "ngrok.out.log") `
     -RedirectStandardError (Join-Path $runDir "ngrok.err.log") `

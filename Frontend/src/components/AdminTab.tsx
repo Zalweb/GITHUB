@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   AttendanceRecord,
@@ -13,16 +13,85 @@ import {
   setEventActive,
 } from "../services/api";
 
+type LeafletGlobal = {
+  map: (target: string | HTMLElement, options?: unknown) => any;
+  tileLayer: (url: string, options?: unknown) => any;
+  marker: (latlng: [number, number], options?: unknown) => any;
+  circle: (latlng: [number, number], options?: unknown) => any;
+};
+
 export default function AdminTab() {
+  const mapRef = useRef<any>(null);
+  const markerRef = useRef<any>(null);
+  const circleRef = useRef<any>(null);
   const [faces, setFaces] = useState<FaceRecord[]>([]);
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [eventName, setEventName] = useState("");
-  const [eventLat, setEventLat] = useState("");
-  const [eventLng, setEventLng] = useState("");
   const [eventRadius, setEventRadius] = useState("50");
+  const [selectedCoords, setSelectedCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  const setMapSelection = useCallback((lat: number, lng: number) => {
+    setSelectedCoords({ lat, lng });
+  }, []);
+
+  const initEventMap = useCallback(() => {
+    if (mapRef.current) {
+      return;
+    }
+
+    const leaflet = (window as Window & { L?: LeafletGlobal }).L;
+    if (!leaflet) {
+      setError("Leaflet failed to load. Refresh this page.");
+      return;
+    }
+
+    const mapEl = document.getElementById("eventMap");
+    if (!mapEl) {
+      return;
+    }
+
+    const defaultLat = 14.5995;
+    const defaultLng = 120.9842;
+
+    const map = leaflet.map(mapEl).setView([defaultLat, defaultLng], 15);
+    leaflet
+      .tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "&copy; OpenStreetMap contributors",
+        maxZoom: 19,
+      })
+      .addTo(map);
+
+    const marker = leaflet.marker([defaultLat, defaultLng], { draggable: true }).addTo(map);
+    const circle = leaflet
+      .circle([defaultLat, defaultLng], {
+        radius: 50,
+        color: "#22d3ee",
+        fillColor: "#22d3ee",
+        fillOpacity: 0.16,
+        weight: 2,
+      })
+      .addTo(map);
+
+    map.on("click", (event: any) => {
+      const { lat, lng } = event.latlng;
+      marker.setLatLng([lat, lng]);
+      setMapSelection(lat, lng);
+    });
+
+    marker.on("dragend", () => {
+      const pos = marker.getLatLng();
+      setMapSelection(pos.lat, pos.lng);
+    });
+
+    mapRef.current = map;
+    markerRef.current = marker;
+    circleRef.current = circle;
+    setMapSelection(defaultLat, defaultLng);
+    window.setTimeout(() => map.invalidateSize(), 0);
+  }, [setMapSelection]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -43,6 +112,36 @@ export default function AdminTab() {
     load().catch(() => undefined);
   }, [load]);
 
+  useEffect(() => {
+    initEventMap();
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+      markerRef.current = null;
+      circleRef.current = null;
+    };
+  }, [initEventMap]);
+
+  useEffect(() => {
+    if (!circleRef.current || !selectedCoords) {
+      return;
+    }
+    circleRef.current.setLatLng([selectedCoords.lat, selectedCoords.lng]);
+  }, [selectedCoords]);
+
+  useEffect(() => {
+    if (!circleRef.current) {
+      return;
+    }
+    const radius = Number(eventRadius);
+    if (!Number.isFinite(radius) || radius <= 0) {
+      return;
+    }
+    circleRef.current.setRadius(radius);
+  }, [eventRadius]);
+
   const handleDelete = useCallback(async (id: number) => {
     try {
       await deleteFace(id);
@@ -58,11 +157,16 @@ export default function AdminTab() {
       return;
     }
 
-    const lat = Number(eventLat);
-    const lng = Number(eventLng);
+    if (!selectedCoords) {
+      setError("Pick a location on the map first.");
+      return;
+    }
+
+    const lat = selectedCoords.lat;
+    const lng = selectedCoords.lng;
     const radius = Number(eventRadius);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(radius)) {
-      setError("Event lat/lng/radius must be valid numbers.");
+    if (!Number.isFinite(radius) || radius <= 0) {
+      setError("Event radius must be a valid number greater than 0.");
       return;
     }
 
@@ -74,7 +178,32 @@ export default function AdminTab() {
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Failed to create event.");
     }
-  }, [eventLat, eventLng, eventName, eventRadius, load]);
+  }, [eventName, eventRadius, load, selectedCoords]);
+
+  const handleUseMyLocation = useCallback(() => {
+    if (!navigator.geolocation) {
+      setError("Geolocation is not supported by this browser.");
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        setMapSelection(lat, lng);
+        if (markerRef.current) {
+          markerRef.current.setLatLng([lat, lng]);
+        }
+        if (mapRef.current) {
+          mapRef.current.setView([lat, lng], 16);
+        }
+      },
+      (geoError) => {
+        setError(`Location error: ${geoError.message}`);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
+    );
+  }, [setMapSelection]);
 
   const handleToggleEvent = useCallback(async (event: EventRecord) => {
     try {
@@ -127,18 +256,22 @@ export default function AdminTab() {
             placeholder="Radius meters"
             className="rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm text-slate-100"
           />
-          <input
-            value={eventLat}
-            onChange={(e) => setEventLat(e.target.value)}
-            placeholder="Latitude"
-            className="rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm text-slate-100"
-          />
-          <input
-            value={eventLng}
-            onChange={(e) => setEventLng(e.target.value)}
-            placeholder="Longitude"
-            className="rounded-lg border border-white/20 bg-slate-950/70 px-3 py-2 text-sm text-slate-100"
-          />
+        </div>
+
+        <div className="mt-3">
+          <div id="eventMap" />
+          <p className="mt-2 text-xs text-slate-300">
+            Selected:{" "}
+            {selectedCoords ? `${selectedCoords.lat.toFixed(6)}, ${selectedCoords.lng.toFixed(6)}` : "No location selected"}
+          </p>
+          <p className="mt-1 text-xs text-cyan-200">Radius preview: {Number(eventRadius) || 0}m</p>
+          <button
+            type="button"
+            onClick={handleUseMyLocation}
+            className="mt-2 rounded-lg border border-indigo-400/40 bg-indigo-500/20 px-3 py-2 text-xs text-indigo-100"
+          >
+            Use my location
+          </button>
         </div>
         <button
           type="button"
