@@ -12,7 +12,7 @@ import os
 import cv2
 import onnxruntime as ort
 from pydantic import BaseModel
-from geo import geofence_check
+from geo import geofence_check, haversine_m
 
 app = FastAPI(
     title="FACE API",
@@ -38,7 +38,8 @@ ANTI_SPOOF_MODEL_PATH = os.getenv("ANTI_SPOOF_MODEL_PATH", os.path.join(BASE_DIR
 ANTI_SPOOF_SCALE = float(os.getenv("ANTI_SPOOF_SCALE", "2.7"))  # 2.7 for V2, 4.0 for V1SE :contentReference[oaicite:2]{index=2}
 LIVENESS_MIN_SCORE = float(os.getenv("LIVENESS_MIN_SCORE", "0.85"))  # tune this
 ALLOW_LIVENESS_BYPASS_WHEN_MODEL_MISSING = os.getenv("ALLOW_LIVENESS_BYPASS_WHEN_MODEL_MISSING", "1") == "1"
-MAX_ALLOWED_ACCURACY_M = float(os.getenv("MAX_ALLOWED_ACCURACY_M", "200"))
+MAX_ALLOWED_ACCURACY_M = float(os.getenv("MAX_ALLOWED_ACCURACY_M", "30"))
+MAX_TRAVEL_SPEED_MPS = float(os.getenv("MAX_TRAVEL_SPEED_MPS", "60"))
 
 _anti_spoof_session = None
 _anti_spoof_input_name = None
@@ -158,6 +159,65 @@ def db_connect() -> sqlite3.Connection:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def parse_iso_to_utc(value: str) -> datetime | None:
+    try:
+        normalized = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def check_implausible_travel(
+    person_name: str,
+    lat: float,
+    lng: float,
+    created_at_iso: str,
+) -> dict | None:
+    con = db_connect()
+    previous = con.execute(
+        """
+        SELECT lat, lng, created_at
+        FROM attendance
+        WHERE person_name = ?
+        ORDER BY datetime(created_at) DESC, id DESC
+        LIMIT 1
+        """,
+        (person_name,),
+    ).fetchone()
+    con.close()
+
+    if previous is None:
+        return None
+
+    prev_dt = parse_iso_to_utc(str(previous["created_at"]))
+    now_dt = parse_iso_to_utc(created_at_iso)
+    if prev_dt is None or now_dt is None:
+        return None
+
+    elapsed_s = (now_dt - prev_dt).total_seconds()
+    if elapsed_s <= 0:
+        return None
+
+    distance_m = haversine_m(
+        float(previous["lat"]),
+        float(previous["lng"]),
+        float(lat),
+        float(lng),
+    )
+    speed_mps = distance_m / elapsed_s
+    if speed_mps <= MAX_TRAVEL_SPEED_MPS:
+        return None
+
+    return {
+        "distance_m": distance_m,
+        "elapsed_s": elapsed_s,
+        "speed_mps": speed_mps,
+    }
 
 
 def serialize_event(row: sqlite3.Row) -> dict:
@@ -454,10 +514,13 @@ def verify_event_location(event_id: int, payload: EventLocationPayload):
         event["radius_m"],
         payload.accuracy_m,
         MAX_ALLOWED_ACCURACY_M,
+        require_accuracy=True,
     )
     return {
         "ok": geo.ok,
+        "reason": geo.reason,
         "distance_m": round(geo.distance_m, 3),
+        "effective_distance_m": round(geo.effective_distance_m, 3) if geo.effective_distance_m is not None else None,
         "radius_m": round(geo.radius_m, 3),
     }
 
@@ -549,12 +612,15 @@ async def attendance_checkin(
         event["radius_m"],
         parsed_payload.accuracy_m,
         MAX_ALLOWED_ACCURACY_M,
+        require_accuracy=True,
     )
     geo_payload = {
         "ok": geo.ok,
         "reason": geo.reason,
         "distance_m": round(geo.distance_m, 3),
+        "effective_distance_m": round(geo.effective_distance_m, 3) if geo.effective_distance_m is not None else None,
         "radius_m": round(geo.radius_m, 3),
+        "accuracy_m": round(parsed_payload.accuracy_m, 3) if parsed_payload.accuracy_m is not None else None,
     }
 
     if not geo.ok:
@@ -569,6 +635,28 @@ async def attendance_checkin(
         }
 
     created_at = utc_now_iso()
+    travel_risk = check_implausible_travel(
+        best_match,
+        parsed_payload.lat,
+        parsed_payload.lng,
+        created_at,
+    )
+    if travel_risk is not None:
+        geo_payload["ok"] = False
+        geo_payload["reason"] = f"implausible_travel_speed:{travel_risk['speed_mps']:.1f}mps"
+        geo_payload["travel_speed_mps"] = round(float(travel_risk["speed_mps"]), 3)
+        geo_payload["travel_distance_m"] = round(float(travel_risk["distance_m"]), 3)
+        geo_payload["travel_elapsed_s"] = round(float(travel_risk["elapsed_s"]), 3)
+        return {
+            "ok": False,
+            "stage": "geofence",
+            "match": best_match,
+            "distance": distance_face,
+            "distance_face": distance_face,
+            "geo": geo_payload,
+            "liveness": live,
+        }
+
     con = db_connect()
     con.execute(
         """

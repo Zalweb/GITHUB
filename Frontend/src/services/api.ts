@@ -70,7 +70,12 @@ export type AttendanceCheckinResponse = {
     ok: boolean;
     reason?: string;
     distance_m: number;
+    effective_distance_m?: number | null;
     radius_m: number;
+    accuracy_m?: number | null;
+    travel_speed_mps?: number;
+    travel_distance_m?: number;
+    travel_elapsed_s?: number;
   };
   liveness?: LivenessResponse & { reason?: string };
   created_at?: string;

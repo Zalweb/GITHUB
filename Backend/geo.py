@@ -25,6 +25,7 @@ class GeoCheckResult:
     ok: bool
     distance_m: float
     radius_m: float
+    effective_distance_m: float | None = None
     reason: str | None = None
 
 
@@ -49,27 +50,64 @@ def geofence_check(
     radius_m: float,
     accuracy_m: float | None = None,
     max_allowed_accuracy_m: float = 30.0,
+    require_accuracy: bool = False,
 ) -> GeoCheckResult:
     """
     Checks if user is inside a circular geofence.
     Optionally checks GPS accuracy (recommended).
     """
-    # Optional accuracy validation
+    if require_accuracy and accuracy_m is None:
+        return GeoCheckResult(
+            ok=False,
+            distance_m=0.0,
+            radius_m=float(radius_m),
+            effective_distance_m=None,
+            reason="gps_accuracy_missing",
+        )
+
+    normalized_accuracy: float | None = None
     if accuracy_m is not None:
+        try:
+            normalized_accuracy = float(accuracy_m)
+        except Exception:
+            return GeoCheckResult(
+                ok=False,
+                distance_m=0.0,
+                radius_m=float(radius_m),
+                effective_distance_m=None,
+                reason="gps_accuracy_invalid",
+            )
+
+        if not math.isfinite(normalized_accuracy) or normalized_accuracy <= 0:
+            return GeoCheckResult(
+                ok=False,
+                distance_m=0.0,
+                radius_m=float(radius_m),
+                effective_distance_m=None,
+                reason="gps_accuracy_invalid",
+            )
+
         if not is_accuracy_ok(accuracy_m, max_allowed_accuracy_m):
             return GeoCheckResult(
                 ok=False,
                 distance_m=0.0,
                 radius_m=float(radius_m),
-                reason=f"gps_accuracy_too_low:{float(accuracy_m):.1f}m"
+                effective_distance_m=None,
+                reason=f"gps_accuracy_too_low:{normalized_accuracy:.1f}m",
             )
 
     dist = haversine_m(user_lat, user_lng, event_lat, event_lng)
-    ok = dist <= float(radius_m)
+    effective_distance = dist + normalized_accuracy if normalized_accuracy is not None else dist
+    ok = effective_distance <= float(radius_m)
+
+    reason = None
+    if not ok:
+        reason = "outside_geofence_with_uncertainty" if normalized_accuracy is not None else "outside_geofence"
 
     return GeoCheckResult(
         ok=ok,
         distance_m=float(dist),
         radius_m=float(radius_m),
-        reason=None if ok else "outside_geofence"
+        effective_distance_m=float(effective_distance),
+        reason=reason,
     )

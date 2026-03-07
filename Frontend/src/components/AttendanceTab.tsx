@@ -27,7 +27,7 @@ type CheckinResult = {
   snapshotUrl: string;
 };
 
-const MAX_ALLOWED_ACCURACY_M = Number(import.meta.env.VITE_MAX_ALLOWED_ACCURACY_M ?? 200);
+const MAX_ALLOWED_ACCURACY_M = Number(import.meta.env.VITE_MAX_ALLOWED_ACCURACY_M ?? 30);
 
 function resolveStageMessage(res: AttendanceCheckinResponse): string {
   if (res.stage === "liveness") {
@@ -38,12 +38,43 @@ function resolveStageMessage(res: AttendanceCheckinResponse): string {
   }
   if (res.stage === "geofence") {
     const reason = res.geo?.reason ?? "outside_geofence";
+    if (reason === "gps_accuracy_missing") {
+      return "GPS accuracy is required. Refresh location and try again.";
+    }
+    if (reason === "gps_accuracy_invalid") {
+      return "Invalid GPS accuracy reading. Refresh location.";
+    }
     if (reason.startsWith("gps_accuracy_too_low")) {
       return `GPS accuracy too low (${reason.split(":")[1]}). Refresh location.`;
+    }
+    if (reason.startsWith("implausible_travel_speed")) {
+      return "Location jump detected. Mock/fake GPS suspected.";
+    }
+    if (reason === "outside_geofence_with_uncertainty") {
+      return "Face matched, but location confidence is outside geofence.";
     }
     return "Face matched, but outside event geofence.";
   }
   return "Check-in success.";
+}
+
+function resolveGeoStatus(reason?: string): string {
+  if (!reason) {
+    return "Outside geofence";
+  }
+  if (reason === "gps_accuracy_missing" || reason === "gps_accuracy_invalid") {
+    return "GPS invalid";
+  }
+  if (reason.startsWith("gps_accuracy_too_low")) {
+    return "GPS too weak";
+  }
+  if (reason.startsWith("implausible_travel_speed")) {
+    return "GPS spoof suspected";
+  }
+  if (reason === "outside_geofence_with_uncertainty") {
+    return "Outside (uncertain GPS)";
+  }
+  return "Outside geofence";
 }
 
 function readGeoPosition(): Promise<BrowserLocation> {
@@ -261,7 +292,7 @@ export default function AttendanceTab() {
 
         if (response.stage === "geofence") {
           setFaceStatus("Real face");
-          setGeoStatus(response.geo?.reason ?? "outside_geofence");
+          setGeoStatus(resolveGeoStatus(response.geo?.reason));
           return;
         }
 
